@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+knowledge/chroma_db/
+knowledge/raw_pages/
+.DS_Store

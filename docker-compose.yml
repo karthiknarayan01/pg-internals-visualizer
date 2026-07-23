@@ -1,0 +1,17 @@
+services:
+  pg-sandbox:
+    image: postgres:16
+    container_name: pg-explain-sandbox
+    environment:
+      POSTGRES_DB: ${PG_SANDBOX_DB:-sandbox}
+      POSTGRES_USER: ${PG_SANDBOX_USER:-sandbox}
+      POSTGRES_PASSWORD: ${PG_SANDBOX_PASSWORD:-sandbox}
+    ports:
+      - "${PG_SANDBOX_PORT:-5433}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_SANDBOX_USER:-sandbox}"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    tmpfs:
+      - /var/lib/postgresql/data

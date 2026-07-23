@@ -1,0 +1,12 @@
+google-adk
+litellm
+fastapi
+uvicorn[standard]
+sse-starlette
+pydantic
+psycopg[binary]
+chromadb
+ollama
+requests
+beautifulsoup4
+python-dotenv

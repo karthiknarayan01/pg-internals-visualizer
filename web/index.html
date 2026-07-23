@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>pg-explain-visualizer</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header>
+    <h1>pg-explain-visualizer</h1>
+    <p>Paste a SQL query and watch how PostgreSQL actually executes it, then see it after optimization.</p>
+  </header>
+  <main>
+    <div class="query-form">
+      <label for="sql">SQL query</label>
+      <textarea id="sql" placeholder="SELECT * FROM users WHERE email = '...'"></textarea>
+      <div id="ddl-section" class="hidden">
+        <label for="ddl">Schema (CREATE TABLE statements) — auto-inference couldn't resolve this query on its own</label>
+        <textarea id="ddl" placeholder="CREATE TABLE users (...);"></textarea>
+      </div>
+      <label for="isolation-level">Transaction isolation level</label>
+      <select id="isolation-level">
+        <option value="read committed" selected>Read Committed (default)</option>
+        <option value="repeatable read">Repeatable Read</option>
+        <option value="serializable">Serializable</option>
+      </select>
+      <div class="actions">
+        <button id="analyze-btn">Analyze</button>
+        <span id="status" class="status-msg"></span>
+      </div>
+      <div id="schema-note" class="schema-note hidden"></div>
+    </div>
+
+    <div id="results" class="hidden">
+      <div class="compare-bar" id="compare-bar"></div>
+
+      <div class="tabs">
+        <button class="tab active" data-deck="before">Before</button>
+        <button class="tab" data-deck="after" id="after-tab" disabled>After optimization</button>
+      </div>
+
+      <div class="deck">
+        <div class="diagram-viewport">
+          <div class="diagram-canvas" id="diagram-canvas">
+            <svg id="diagram-svg"></svg>
+          </div>
+        </div>
+
+        <div class="step-panel">
+          <div class="slide-header">
+            <h2 id="slide-title"></h2>
+            <span class="slide-counter" id="slide-counter"></span>
+          </div>
+          <div class="narration" id="narration"></div>
+          <div class="nav-row">
+            <button class="secondary nav-symbol" id="prev-btn" title="Previous step">&#8249;</button>
+            <button class="secondary" id="play-btn" title="Autoplay">&#9654;</button>
+            <div class="dots" id="dots"></div>
+            <button class="secondary nav-symbol" id="next-btn" title="Next step">&#8250;</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="recommendations hidden" id="recommendations">
+        <h3>Recommended optimizations</h3>
+        <div id="rec-list"></div>
+      </div>
+    </div>
+  </main>
+  <script src="vendor/rough.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
