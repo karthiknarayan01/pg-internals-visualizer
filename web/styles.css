@@ -149,20 +149,16 @@ button.secondary { background: transparent; color: var(--text); border: 1px soli
   font-size: 13px;
   fill: #1e1e1e;
 }
-.hand-text.edge-label { fill: #495057; font-size: 11px; }
-.hand-text.edge-label-halo { fill: none; stroke: #faf8f2; stroke-width: 5; stroke-linejoin: round; }
 
-.rough-node, .rough-edge { transition: opacity 0.25s; }
-.rough-node.state-pending, .rough-edge.state-pending { opacity: 0.2; }
-.rough-node.state-visited, .rough-edge.state-visited { opacity: 0.55; }
-.rough-node.state-active, .rough-edge.state-active { opacity: 1; }
-.rough-node.state-active path:nth-child(2) { stroke: #e8590c !important; stroke-width: 3 !important; }
-.rough-edge.state-active path { stroke: #e8590c !important; stroke-width: 2.4 !important; }
-.rough-edge.state-pending .hand-text.edge-label { opacity: 0.3; }
-
-.rough-region { opacity: 0.9; }
-.hand-text.region-label { font-size: 12px; font-weight: 700; fill: #495057; letter-spacing: 0.02em; }
-.hand-text.legend-item { font-size: 10px; fill: #868e96; }
+/* v9: every rectangle/text/arrow the Expert emits is one `.rough-el`, no
+   more separate node/edge/region/group tiers — geometry, color, and
+   grouping are all decided by the Expert itself now, not this stylesheet. */
+#diagram-svg { transition: transform 0.3s ease; }
+.rough-el { transition: opacity 0.25s; }
+.rough-el.state-pending { opacity: 0.15; }
+.rough-el.state-visited { opacity: 0.55; }
+.rough-el.state-active { opacity: 1; }
+.rough-el.state-active path:nth-child(2) { stroke-width: 2.6; }
 
 /* ---- step panel below the diagram ---- */
 
@@ -183,15 +179,6 @@ button.secondary { background: transparent; color: var(--text); border: 1px soli
 button.nav-symbol { font-size: 1.1rem; line-height: 1; padding: 0.5rem 0.9rem; }
 #play-btn { font-size: 0.85rem; padding: 0.5rem 0.8rem; }
 #play-btn.playing { border-color: var(--accent); color: var(--accent); }
-
-.compare-bar {
-  display: flex; gap: 1.5rem; background: var(--panel);
-  border: 1px solid var(--panel-border); border-radius: 10px;
-  padding: 0.9rem 1.2rem; margin: 1rem 0; font-size: 0.85rem;
-}
-.compare-bar .metric b { display: block; font-size: 1.1rem; }
-.compare-bar .metric.good b { color: var(--good); }
-.compare-bar .metric.warn b { color: var(--accent-2); }
 
 .recommendations {
   background: var(--panel);

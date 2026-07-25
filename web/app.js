@@ -1,19 +1,12 @@
-// Node/region geometry (x, y, w, h, wrapped text lines) is computed
-// entirely server-side (agent/tools/diagram_layout.py) — this file only
-// draws whatever it's given via rough.js, with a fixed canvas padding.
+// v9: the Expert LLM emits a *complete* Excalidraw-shaped diagram (real
+// x/y/width/height/color per element — see agent/prompts.py::PG_EXPERT_
+// INSTRUCTION) plus a slideshow of {title, narration, focus_box_ids,
+// viewport} slides. This file no longer computes or interprets any
+// geometry/color itself — it draws each rectangle/text/arrow element using
+// its own stored style, and pans/zooms to each step's own viewport.
 const CANVAS_PADDING = 60;
 const SVG_NS = "http://www.w3.org/2000/svg";
-
-const KIND_COLORS = {
-  client: { fill: "#a5d8ff", stroke: "#1864ab" },
-  server: { fill: "#d0bfff", stroke: "#5f3dc4" },
-  process: { fill: "#b2f2bb", stroke: "#2b8a3e" },
-  memory: { fill: "#ffe066", stroke: "#e67700" },
-  storage: { fill: "#eebefa", stroke: "#9c36b5" },
-  structure: { fill: "#99e9f2", stroke: "#0b7285" },
-  executor: { fill: "#a5d8ff", stroke: "#1971c2" },
-};
-const REGION_COLOR = { fill: "transparent", stroke: "#868e96" };
+const MAX_ZOOM = 2.5;
 
 const state = {
   analysis: null,
@@ -22,6 +15,8 @@ const state = {
   renderedDeck: null, // which deck's diagram is currently built in the DOM
   playing: false,
   playTimer: null,
+  canvasOffset: { x: CANVAS_PADDING, y: CANVAS_PADDING }, // diagram-space -> SVG-space
+  fullCanvasSize: { w: 0, h: 0 }, // unscaled SVG size, for resetting zoom
 };
 
 const el = {
@@ -33,7 +28,6 @@ const el = {
   status: document.getElementById("status"),
   schemaNote: document.getElementById("schema-note"),
   results: document.getElementById("results"),
-  compareBar: document.getElementById("compare-bar"),
   tabs: document.querySelectorAll(".tab"),
   afterTab: document.getElementById("after-tab"),
   canvas: document.getElementById("diagram-canvas"),
@@ -168,7 +162,6 @@ function handleResult(data) {
     el.schemaNote.classList.remove("hidden");
   }
 
-  renderCompareBar();
   renderRecommendations();
   renderDeck();
 }
@@ -226,23 +219,6 @@ function stopPlaying() {
   el.playBtn.classList.remove("playing");
 }
 
-function renderCompareBar() {
-  const a = state.analysis;
-  if (!a.after_stats) {
-    el.compareBar.innerHTML = `<div class="metric"><span>Execution time</span><b>${fmtMs(a.before_stats.execution_time_ms)}</b></div>
-      <div class="metric"><span>No optimization needed / found</span></div>`;
-    return;
-  }
-  const before = a.before_stats.execution_time_ms;
-  const after = a.after_stats.execution_time_ms;
-  const speedup = before && after ? (before / after).toFixed(1) : "-";
-  el.compareBar.innerHTML = `
-    <div class="metric"><span>Before</span><b>${fmtMs(before)}</b></div>
-    <div class="metric"><span>After</span><b>${fmtMs(after)}</b></div>
-    <div class="metric ${speedup >= 1 ? "good" : "warn"}"><span>Speedup</span><b>${speedup}&times;</b></div>
-  `;
-}
-
 function renderRecommendations() {
   const recs = state.analysis.recommendations || [];
   if (!recs.length) {
@@ -260,55 +236,78 @@ function renderRecommendations() {
     .join("");
 }
 
-// ---- Hand-drawn (rough.js) rendering — all geometry comes from the server ----
+// ---- Hand-drawn (rough.js) rendering of the Expert's own raw Excalidraw
+// elements — every rectangle/text/arrow uses its own stored x/y/width/
+// height/color/seed, never a client-computed one. ----
 
-function seedFor(id) {
-  let hash = 0;
-  for (let i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) >>> 0;
-  return (hash % 2000) + 1;
+function seedFromInt(n) {
+  return ((n || 1) % 2000) + 1;
 }
 
-const TITLE_LINE_H = 19;
-const DETAIL_LINE_H = 14;
-const BOX_PAD = 10;
-
-// Draws one rough rectangle + its pre-wrapped text (from the server), in a
-// <g> whose opacity class drives active/visited/pending — cheap: no need
-// to regenerate the rough sketch on every step change.
-function drawBox(rc, svg, x, y, w, h, lines, colors, id, extraClass) {
+function drawRawRect(rc, svg, e, offsetX, offsetY) {
+  const x = e.x + offsetX, y = e.y + offsetY;
   const g = document.createElementNS(SVG_NS, "g");
-  if (id) g.id = `node-${id}`;
-  g.classList.add("rough-node", "state-pending");
-  if (extraClass) g.classList.add(extraClass);
-
-  const rect = rc.rectangle(x, y, w, h, {
-    fill: colors.fill,
-    fillStyle: "hachure",
-    fillWeight: 1.5,
-    stroke: colors.stroke,
-    strokeWidth: 1.6,
-    roughness: 1.6,
-    seed: id ? seedFor(id) : 7,
-  });
-  g.appendChild(rect);
-
-  if (lines && lines.length) {
-    const text = document.createElementNS(SVG_NS, "text");
-    text.setAttribute("x", x + BOX_PAD);
-    text.setAttribute("y", y + BOX_PAD + 12);
-    text.setAttribute("class", "hand-text");
-    lines.forEach((line, i) => {
-      const tspan = document.createElementNS(SVG_NS, "tspan");
-      tspan.setAttribute("x", x + BOX_PAD);
-      tspan.setAttribute("dy", i === 0 ? 0 : line.bold ? TITLE_LINE_H : DETAIL_LINE_H);
-      tspan.textContent = line.text;
-      if (line.bold) tspan.setAttribute("font-weight", "700");
-      text.appendChild(tspan);
-    });
-    g.appendChild(text);
-  }
+  g.dataset.id = e._id;
+  g.classList.add("rough-el", "state-pending");
+  const opts = {
+    fill: e.backgroundColor === "transparent" ? "transparent" : e.backgroundColor,
+    fillStyle: e.fillStyle || "solid",
+    stroke: e.strokeColor,
+    strokeWidth: e.strokeWidth || 1.5,
+    roughness: e.roughness != null ? e.roughness : 1,
+    seed: seedFromInt(e.seed),
+  };
+  if (e.strokeStyle === "dashed") opts.strokeLineDash = [8, 6];
+  g.appendChild(rc.rectangle(x, y, e.width, e.height, opts));
   svg.appendChild(g);
-  return { group: g, x, y, w, h };
+}
+
+function drawRawText(svg, e, offsetX, offsetY) {
+  const x = e.x + offsetX, y = e.y + offsetY;
+  const g = document.createElementNS(SVG_NS, "g");
+  g.dataset.id = e._id;
+  g.classList.add("rough-el", "state-pending");
+  const fontSize = e.fontSize || 16;
+  const lineH = fontSize * (e.lineHeight || 1.25);
+  const text = document.createElementNS(SVG_NS, "text");
+  text.setAttribute("class", "hand-text");
+  text.setAttribute("font-size", fontSize);
+  text.setAttribute("fill", e.strokeColor || "#1e1e1e");
+  const anchor = e.textAlign === "center" ? "middle" : e.textAlign === "right" ? "end" : "start";
+  text.setAttribute("text-anchor", anchor);
+  const tx = anchor === "middle" ? x + e.width / 2 : anchor === "end" ? x + e.width : x;
+  String(e.text || "").split("\n").forEach((line, i) => {
+    const tspan = document.createElementNS(SVG_NS, "tspan");
+    tspan.setAttribute("x", tx);
+    tspan.setAttribute("y", y + fontSize + i * lineH);
+    tspan.textContent = line;
+    text.appendChild(tspan);
+  });
+  g.appendChild(text);
+  svg.appendChild(g);
+}
+
+function drawRawArrow(rc, svg, e, offsetX, offsetY) {
+  // `points` can have more than 2 entries (one or more bend points) when the
+  // Expert routes an arrow around a box instead of straight through it —
+  // linearPath handles both a straight 2-point case and a bent path the
+  // same way, so there's no special-casing needed here.
+  const pts = e.points.map(([px, py]) => [e.x + px + offsetX, e.y + py + offsetY]);
+  const g = document.createElementNS(SVG_NS, "g");
+  g.dataset.id = e._id;
+  g.classList.add("rough-el", "state-pending");
+  const path = rc.linearPath(pts, {
+    stroke: e.strokeColor,
+    strokeWidth: e.strokeWidth || 1.5,
+    roughness: e.roughness != null ? e.roughness : 1,
+    seed: seedFromInt(e.seed),
+  });
+  if (e.endArrowhead === "arrow") {
+    const innerPath = path.querySelector("path") || path;
+    innerPath.setAttribute("marker-end", "url(#arrowhead)");
+  }
+  g.appendChild(path);
+  svg.appendChild(g);
 }
 
 // ---- Persistent diagram: built once per deck, never rebuilt between steps ----
@@ -318,138 +317,74 @@ function renderDeck() {
   if (!diagram) return;
 
   el.svg.innerHTML = "";
+  el.svg.style.transform = "";
   const defs = document.createElementNS(SVG_NS, "defs");
   defs.innerHTML = `<marker id="arrowhead" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
     <path d="M0,0 L8,4 L0,8 Z" fill="#495057" /></marker>`;
   el.svg.appendChild(defs);
 
   const rc = rough.svg(el.svg);
-  const rects = {};
-  let maxX = 0;
-  let maxY = 0;
+  const entries = Object.entries(diagram.elements || {}).map(([id, e]) => ({ ...e, _id: id }));
 
-  // Regions draw first (background dashed containers), nodes on top.
-  (diagram.regions || []).forEach((region) => {
-    const x = region.x + CANVAS_PADDING;
-    const y = region.y + CANVAS_PADDING;
-    const g = document.createElementNS(SVG_NS, "g");
-    g.classList.add("rough-region");
-    const rect = rc.rectangle(x, y, region.w, region.h, {
-      fill: "transparent",
-      stroke: REGION_COLOR.stroke,
-      strokeWidth: 1.4,
-      strokeLineDash: [8, 6],
-      roughness: 1.2,
-      seed: seedFor(region.id),
-    });
-    g.appendChild(rect);
-    const label = document.createElementNS(SVG_NS, "text");
-    label.setAttribute("x", x + 10);
-    label.setAttribute("y", y + 20);
-    label.setAttribute("class", "hand-text region-label");
-    label.textContent = region.label;
-    g.appendChild(label);
-    el.svg.appendChild(g);
-    maxX = Math.max(maxX, x + region.w);
-    maxY = Math.max(maxY, y + region.h);
-  });
+  let minX = 0, minY = 0, maxX = 0, maxY = 0;
+  if (entries.length) {
+    minX = Math.min(...entries.map((e) => e.x));
+    minY = Math.min(...entries.map((e) => e.y));
+    maxX = Math.max(...entries.map((e) => e.x + e.width));
+    maxY = Math.max(...entries.map((e) => e.y + e.height));
+  }
+  const offsetX = CANVAS_PADDING - minX;
+  const offsetY = CANVAS_PADDING - minY;
+  state.canvasOffset = { x: offsetX, y: offsetY };
 
-  diagram.nodes.forEach((node) => {
-    const x = node.x + CANVAS_PADDING;
-    const y = node.y + CANVAS_PADDING;
-    const colors = KIND_COLORS[node.kind] || KIND_COLORS.executor;
-    const box = drawBox(rc, el.svg, x, y, node.w, node.h, node.lines, colors, node.id);
-    rects[node.id] = box;
-    maxX = Math.max(maxX, x + node.w);
-    maxY = Math.max(maxY, y + node.h);
-  });
+  // Biggest rects first (dashed region frames are always largest, so this
+  // alone reproduces "small boxes sit visually inside big ones"), then
+  // arrows, then text on top.
+  const rects = entries.filter((e) => e.type === "rectangle").sort((a, b) => b.width * b.height - a.width * a.height);
+  const arrows = entries.filter((e) => e.type === "arrow");
+  const texts = entries.filter((e) => e.type === "text");
+  rects.forEach((e) => drawRawRect(rc, el.svg, e, offsetX, offsetY));
+  arrows.forEach((e) => drawRawArrow(rc, el.svg, e, offsetX, offsetY));
+  texts.forEach((e) => drawRawText(el.svg, e, offsetX, offsetY));
 
-  drawEdges(rc, diagram, rects);
+  const totalW = maxX - minX + 2 * CANVAS_PADDING;
+  const totalH = maxY - minY + 2 * CANVAS_PADDING;
+  state.fullCanvasSize = { w: totalW, h: totalH };
+  el.canvas.style.width = `${totalW}px`;
+  el.canvas.style.height = `${totalH}px`;
+  el.svg.setAttribute("width", totalW);
+  el.svg.setAttribute("height", totalH);
 
-  el.canvas.style.width = `${maxX + CANVAS_PADDING}px`;
-  el.canvas.style.height = `${maxY + CANVAS_PADDING}px`;
-  el.svg.setAttribute("width", maxX + CANVAS_PADDING);
-  el.svg.setAttribute("height", maxY + CANVAS_PADDING);
-
-  renderLegend(diagram.legend);
-
-  state.nodeRects = rects;
   state.renderedDeck = state.deck;
   applyStepState();
 }
 
-function renderLegend(legend) {
-  if (!legend || !legend.length) return;
-  const g = document.createElementNS(SVG_NS, "g");
-  g.classList.add("rough-legend");
-  legend.forEach((item, i) => {
-    const text = document.createElementNS(SVG_NS, "text");
-    text.setAttribute("x", 8);
-    text.setAttribute("y", el.svg.getAttribute("height") ? Number(el.svg.getAttribute("height")) - 10 - i * 14 : 20);
-    text.setAttribute("class", "hand-text legend-item");
-    text.textContent = `${item.label}: ${item.meaning}`;
-    g.appendChild(text);
-  });
-  el.svg.appendChild(g);
-}
+// Pans/zooms the scrollable wrapper so `viewport` (in original
+// diagram-space coordinates, per the Expert's own slide JSON) fills the
+// visible area — `null` resets to the full, unzoomed diagram.
+function applyViewport(viewport) {
+  const wrap = el.canvas.parentElement;
+  if (!viewport || !viewport.width || !viewport.height) {
+    el.svg.style.transform = "";
+    el.canvas.style.width = `${state.fullCanvasSize.w}px`;
+    el.canvas.style.height = `${state.fullCanvasSize.h}px`;
+    wrap.scrollTo({ left: 0, top: 0, behavior: "smooth" });
+    return;
+  }
+  const offset = state.canvasOffset;
+  const vx = viewport.x + offset.x, vy = viewport.y + offset.y;
+  const vw = viewport.width, vh = viewport.height;
+  const availW = wrap.clientWidth, availH = wrap.clientHeight;
+  const scale = Math.min(availW / vw, availH / vh, MAX_ZOOM);
 
-function rectEdgePoint(rect, tx, ty) {
-  const cx = rect.x + rect.w / 2;
-  const cy = rect.y + rect.h / 2;
-  const dx = tx - cx;
-  const dy = ty - cy;
-  if (dx === 0 && dy === 0) return { x: cx, y: cy };
-  const halfW = rect.w / 2 + 4;
-  const halfH = rect.h / 2 + 4;
-  const scale = 1 / Math.max(Math.abs(dx) / halfW, Math.abs(dy) / halfH);
-  return { x: cx + dx * scale, y: cy + dy * scale };
-}
-
-function drawEdges(rc, diagram, rects) {
-  diagram.edges.forEach((edge) => {
-    const f = rects[edge.from];
-    const t = rects[edge.to];
-    if (!f || !t) return;
-    const fCenter = { x: f.x + f.w / 2, y: f.y + f.h / 2 };
-    const tCenter = { x: t.x + t.w / 2, y: t.y + t.h / 2 };
-    const p1 = rectEdgePoint(f, tCenter.x, tCenter.y);
-    const p2 = rectEdgePoint(t, fCenter.x, fCenter.y);
-
-    const g = document.createElementNS(SVG_NS, "g");
-    g.id = `edge-${edge.from}-${edge.to}`;
-    g.classList.add("rough-edge", "state-pending");
-
-    const line = rc.line(p1.x, p1.y, p2.x, p2.y, {
-      stroke: "#495057",
-      strokeWidth: 1.6,
-      roughness: 1.4,
-      seed: seedFor(edge.from + edge.to),
-    });
-    const innerPath = line.querySelector("path") || line;
-    innerPath.setAttribute("marker-end", "url(#arrowhead)");
-    g.appendChild(line);
-
-    if (edge.label) {
-      const mx = (p1.x + p2.x) / 2;
-      const my = (p1.y + p2.y) / 2 - 6;
-      const halo = document.createElementNS(SVG_NS, "text");
-      halo.setAttribute("x", mx);
-      halo.setAttribute("y", my);
-      halo.setAttribute("text-anchor", "middle");
-      halo.setAttribute("class", "hand-text edge-label-halo");
-      halo.textContent = edge.label;
-      g.appendChild(halo);
-
-      const text = document.createElementNS(SVG_NS, "text");
-      text.setAttribute("x", mx);
-      text.setAttribute("y", my);
-      text.setAttribute("text-anchor", "middle");
-      text.setAttribute("class", "hand-text edge-label");
-      text.textContent = edge.label;
-      g.appendChild(text);
-    }
-
-    el.svg.appendChild(g);
+  el.svg.style.transformOrigin = "0 0";
+  el.svg.style.transform = `scale(${scale})`;
+  el.canvas.style.width = `${state.fullCanvasSize.w * scale}px`;
+  el.canvas.style.height = `${state.fullCanvasSize.h * scale}px`;
+  wrap.scrollTo({
+    left: Math.max(0, vx * scale - (availW - vw * scale) / 2),
+    top: Math.max(0, vy * scale - (availH - vh * scale) / 2),
+    behavior: "smooth",
   });
 }
 
@@ -463,21 +398,14 @@ function applyStepState() {
 
   const visited = new Set();
   for (let i = 0; i < state.stepIndex; i++) {
-    steps[i].highlight_node_ids.forEach((id) => visited.add(id));
+    (steps[i].element_ids || []).forEach((id) => visited.add(id));
   }
-  const active = new Set(step.highlight_node_ids);
+  const active = new Set(step.element_ids || []);
 
-  el.svg.querySelectorAll(".rough-node").forEach((g) => {
-    const id = g.id.replace(/^node-/, "");
+  el.svg.querySelectorAll(".rough-el").forEach((g) => {
+    const id = g.dataset.id;
     g.classList.remove("state-active", "state-visited", "state-pending");
     g.classList.add(active.has(id) ? "state-active" : visited.has(id) ? "state-visited" : "state-pending");
-  });
-  el.svg.querySelectorAll(".rough-edge").forEach((g) => {
-    const [, from, to] = g.id.match(/^edge-(.+)-(.+)$/);
-    const bothActive = active.has(from) && active.has(to);
-    const bothSeen = (active.has(from) || visited.has(from)) && (active.has(to) || visited.has(to));
-    g.classList.remove("state-active", "state-visited", "state-pending");
-    g.classList.add(bothActive ? "state-active" : bothSeen ? "state-visited" : "state-pending");
   });
 
   el.slideTitle.textContent = step.title;
@@ -498,12 +426,7 @@ function applyStepState() {
   el.prevBtn.disabled = state.stepIndex === 0;
   el.nextBtn.disabled = state.stepIndex === steps.length - 1;
 
-  const activeGroup = document.getElementById(`node-${step.highlight_node_ids[0]}`);
-  if (activeGroup) activeGroup.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
-}
-
-function fmtMs(v) {
-  return v == null ? "-" : `${v.toFixed ? v.toFixed(2) : v} ms`;
+  applyViewport(step.viewport);
 }
 
 function escapeHtml(s) {

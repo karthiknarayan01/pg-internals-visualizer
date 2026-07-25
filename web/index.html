@@ -3,12 +3,12 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>pg-explain-visualizer</title>
+  <title>pg-internals-visualizer</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
   <header>
-    <h1>pg-explain-visualizer</h1>
+    <h1>pg-internals-visualizer</h1>
     <p>Paste a SQL query and watch how PostgreSQL actually executes it, then see it after optimization.</p>
   </header>
   <main>
@@ -33,8 +33,6 @@
     </div>
 
     <div id="results" class="hidden">
-      <div class="compare-bar" id="compare-bar"></div>
-
       <div class="tabs">
         <button class="tab active" data-deck="before">Before</button>
         <button class="tab" data-deck="after" id="after-tab" disabled>After optimization</button>
