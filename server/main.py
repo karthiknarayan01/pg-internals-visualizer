@@ -1,11 +1,11 @@
 """FastAPI backend for pg-explain-visualizer.
 
-POST /api/analyze streams progress over SSE while the orchestrator agent
-(agent/agent.py::run_orchestrator) does its work — standing up a sandbox,
-resolving schema, running a real EXPLAIN, and consulting the PG Internals
-Expert / Visual Critique loop (possibly twice, if an optimization is
-recommended) — since that loop can take minutes and a silent wait reads as
-broken. A final "result" event carries the full response payload.
+POST /api/analyze streams progress over SSE while the PG Internals Expert
+(agent/agent.py::run_direct_expert) does its work — no orchestrator, no
+docker/sandbox, no real EXPLAIN execution; the Expert reasons out its own
+plan and draws the diagram in one call (see PART 0 of
+agent/prompts.py::PG_EXPERT_INSTRUCTION). A final "result" event carries
+the full response payload.
 """
 import asyncio
 import json
@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
 from starlette.requests import Request
 
-from agent.agent import run_orchestrator
+from agent.agent import run_direct_expert
 from server.schemas import AnalyzeRequest
 
 app = FastAPI(title="pg-explain-visualizer")
@@ -47,7 +47,7 @@ async def _stream_analysis(req: AnalyzeRequest):
 
     async def run() -> None:
         try:
-            result = await run_orchestrator(req.sql, req.ddl, req.isolation_level, on_status)
+            result = await run_direct_expert(req.sql, req.ddl, req.isolation_level, on_status)
         except Exception as exc:  # never let an unexpected error hang the stream
             result = {"status": "error", "message": f"Unexpected error: {exc}"}
         await queue.put({"event": "result", "data": json.dumps(result)})
